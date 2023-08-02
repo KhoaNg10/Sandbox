@@ -3,19 +3,24 @@
 
 #include "EAStripperDFN.h"
 //#include "sde_trigger_defs.h"
-#include "trigger_check.h"
-#include "TriggerParam.h"
+//#include "trigger_check.h"
+//#include "TriggerParam.h"
 #include <TStyle.h>
 #include <TH1.h>
 #include <TFile.h>
 #include <TProfile.h>
+#include "IoSdData.h"
 //#include <THist.h>
 //#include <TH1I> //placeholder
-//#include "EventHistogramModule.h"
+#include "IoSdData.h"
 
 
 #include <stdio.h>
 #include <sstream>
+
+//#include "sde_trigger_defs.h"
+//#include "trigger_check.h"
+//#include "TriggerParam.h"
 
 using namespace det;
 using namespace evt;
@@ -56,9 +61,36 @@ EAStripperDFN::EAStripperDFN() {}
 
 EAStripperDFN::~EAStripperDFN() {}
 
-TFile *outputFile = nullptr;
+
+
+TFile *outputFile; //= nullptr;
 TH1I* eventHist; // Histogram for event numbers
 std::map<int, TH1I*> eventHists;
+
+//
+
+
+
+/*EAStripperDFN & EAStripperDFN::operator =(const EAStripperDFN & st) {
+    if (this == &st)
+    return *this;
+  Trigger = st.Trigger;
+}
+
+EAStripperDFN::EAStripperDFN(const EAStripperDFN & st) {
+  Trigger = st.Trigger;
+}
+
+IoSdT2Trigger EAStripperDFN::trigger() const {
+  return Trigger;
+}
+
+int EAStripperDFN::TriggerType() {
+  if (Trigger.IsTOTd())
+    return 4;
+}*/
+
+
 
 
 VModule::ResultFlag EAStripperDFN::Init()
@@ -163,6 +195,7 @@ if ((t < t0) || (t >t1))
 
   //Trigger = ToTD;
   isUUB = false;
+  //IsToTD = true;
   int eventId = sevent.GetHeader().GetId();
 
   // Create a new histogram for this event number if one doesn't exist
@@ -180,8 +213,8 @@ if ((t < t0) || (t >t1))
     {
   fCurrentStation = &(*stationIt);
   fStationID = fCurrentStation->GetId();
-  if (fStationID != 56 && fStationID != 1733 && fStationID != 1736 && fStationID != 1737 && fStationID != 1738 && fStationID != 1742 && fStationID != 1744 && fStationID != 734) continue;         
-  
+  //if (fStationID != 56 && fStationID != 1733 && fStationID != 1736 && fStationID != 1737 && fStationID != 1738 && fStationID != 1742 && fStationID != 1744 && fStationID != 734) continue;
+  if (!Trigger.IsTOTd()) continue;         
   const int firstPMT = sdet::Station::GetFirstPMTId();
   nPMTs = 0;
 
@@ -224,13 +257,15 @@ if ((t < t0) || (t >t1))
 	    if (pmt.GetCalibData().IsTubeOk()) Enable[p] = true;
 	    if (!pmt.GetCalibData().IsTubeOk()) info << "bad:";
     }
-      //std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
+      std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
 
       }
       isUUB = isUUB || fCurrentStation->IsUUB();
+      //IsToTD = IsToTD || Trigger.IsTOTd();
+      //Trigger.IsTOTd;
     }
   //not necessary if the selected stations already has UUB
-  if (isUUB && Trigger.IsToTD() == true )
+  if (isUUB)
     reject = false;
     //std::cout << "has UUB and ToTD" <<
   else
@@ -240,7 +275,7 @@ if ((t < t0) || (t >t1))
     {
       cout_rejected << "Event " << sevent.GetHeader().GetId()
                     << " Theta=" << theta << endl;
-      std::cout << "station" << std::to_string(fStationID) + "has UUB" << std::endl;
+      //std::cout << "station" << std::to_string(fStationID) + "has UUB" << std::endl;
       return eContinueLoop;
       
       //return eSuccess;
@@ -252,6 +287,7 @@ if ((t < t0) || (t >t1))
   return eSuccess;
     }
   //add a new module that will selects stations that have ToTD
+  
 }
 
 
