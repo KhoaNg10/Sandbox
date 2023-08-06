@@ -12,7 +12,7 @@
 #include "IoSdData.h"
 //#include <THist.h>
 //#include <TH1I> //placeholder
-#include "IoSdData.h"
+//#include "IoSdData.h"
 
 
 #include <stdio.h>
@@ -35,7 +35,7 @@ int FiltTrace[3][768];
 double Base[3];
 int Baseline[5];
 double VEMpk[3];
-int TargetStation;
+//int TargetStation;
 int FirstMonth;
 int Year;
 int LastMonth;
@@ -47,11 +47,7 @@ int LastDay;
 int LastHour;
 int LastMinute;
 //int dt;
-
-
-// public:
-//     bool* getEnable() { return Enable; }
-//     int* getAdcs(int index) { return adcs[index]; }
+int trig_id;
 
 sevt::Station *CurrentStation;
 sevt::SEvent::StationIterator stationIt;
@@ -63,35 +59,9 @@ EAStripperDFN::~EAStripperDFN() {}
 
 
 
-TFile *outputFile; //= nullptr;
+TFile *outputFile = nullptr;
 TH1I* eventHist; // Histogram for event numbers
 std::map<int, TH1I*> eventHists;
-
-//
-
-
-
-/*EAStripperDFN & EAStripperDFN::operator =(const EAStripperDFN & st) {
-    if (this == &st)
-    return *this;
-  Trigger = st.Trigger;
-}
-
-EAStripperDFN::EAStripperDFN(const EAStripperDFN & st) {
-  Trigger = st.Trigger;
-}
-
-IoSdT2Trigger EAStripperDFN::trigger() const {
-  return Trigger;
-}
-
-int EAStripperDFN::TriggerType() {
-  if (Trigger.IsTOTd())
-    return 4;
-}*/
-
-
-
 
 VModule::ResultFlag EAStripperDFN::Init()
 {
@@ -100,11 +70,6 @@ VModule::ResultFlag EAStripperDFN::Init()
   // The eSuccess flag indicates the method ended
   // successfully.  For other possible return types, 
   // see the VModule documentation.
-  //outputTree->Branch("sevent", &event.GetSEvent(), 32000, 99);
-  //eventHistogramModule.Init();
-  //  char name [20];
- // char name2 [80];
-  
   INFO("EAStripperDFN::Init()");
   gStyle->SetOptStat(0);
 
@@ -115,7 +80,7 @@ VModule::ResultFlag EAStripperDFN::Init()
     dataBranch;
  
   //topBranch.GetChild("EnableDumpHistos").GetData(DumpHistos);
-  topBranch.GetChild("TargetStation").GetData(TargetStation);
+  //topBranch.GetChild("CurrentStation").GetData(CurrentStation);
 
   topBranch.GetChild("FirstMonth").GetData(FirstMonth);
   topBranch.GetChild("Year").GetData(Year);
@@ -131,22 +96,19 @@ VModule::ResultFlag EAStripperDFN::Init()
   cout_selected.open("SelectedEvents.txt", std::fstream::out);
   cout_rejected.open("RejectedEvents.txt", std::fstream::out);
   outputFile = new TFile("output_hist.root", "RECREATE");
-  //eventHist = new TH1I("eventHist", "Histogram of Event Numbers", 100, 0, 20000); // adjust binning as needed
+
   return eSuccess;
 }
 
 VModule::ResultFlag EAStripperDFN::Run(Event& event)
 { 
   ostringstream info;
-  bool reject;
+  //bool reject;
   double theta;
   int nPMTs;
   int i, p;
   int traceLength;
-  // Run EventHistogramModule
-  //eventHistogramModule.Run(event);
 
-  
   if (!event.HasSEvent())
     {
       INFO("Event doesn't have surface detector event");
@@ -162,8 +124,6 @@ const utl::TimeStamp& lasttime = UTCDateTime(Year,LastMonth,LastDay,LastHour,Las
 unsigned long t = eventTime.GetGPSSecond();
 unsigned long t0 = firstTime.GetGPSSecond();
 unsigned long t1 = lasttime.GetGPSSecond();
-
-//double dt = (t - t0)/60./60.;
 
 if ((t < t0) || (t >t1))
   {
@@ -198,26 +158,29 @@ if ((t < t0) || (t >t1))
   //IsToTD = true;
   int eventId = sevent.GetHeader().GetId();
 
-  // Create a new histogram for this event number if one doesn't exist
-  if(eventHists.find(eventId) == eventHists.end()) {
-    eventHists[eventId] = new TH1I(("eventHist_" + std::to_string(eventId)).c_str(), 
-                                    ("Histogram of Event " + std::to_string(eventId)).c_str(), 
-                                    100, 0, 2048); // adjust binning as needed
-  }
-
   // Now use the histogram
   eventHist = eventHists[eventId];
-  
+  fStationID = 0;
   for (stationIt = sevent.StationsBegin();
        stationIt != sevent.StationsEnd(); stationIt++)
     {
   fCurrentStation = &(*stationIt);
   fStationID = fCurrentStation->GetId();
-  //if (fStationID != 56 && fStationID != 1733 && fStationID != 1736 && fStationID != 1737 && fStationID != 1738 && fStationID != 1742 && fStationID != 1744 && fStationID != 734) continue;
-  if (!Trigger.IsTOTd()) continue;         
+  bool isCurrentStationUUB = fCurrentStation->IsUUB();
   const int firstPMT = sdet::Station::GetFirstPMTId();
   nPMTs = 0;
+  
+  // Accessing the trigger data
+  const sevt::StationTriggerData& trig = fCurrentStation->GetTriggerData();
+  trig_id = trig.GetPLDTrigger();
+  
+  // Define the ToTD triggers condition (adjust as per your need)
+  int ToTDTriggers = StationTriggerData::ePLDLatchTOTB | StationTriggerData::ePLDTOTB;
 
+  if (!isCurrentStationUUB || (trig_id & ~ToTDTriggers) != 0) continue;
+  
+  //std::cout << "Event " << eventId << " is ToTD" << std::endl;
+  //if (isUUB) 
   for (p = 0; p < 3; p++) 
   {
     const int pmtId = p + firstPMT;
@@ -235,75 +198,73 @@ if ((t < t0) || (t >t1))
       if(eventHists.find(histId) == eventHists.end()) {
         eventHists[histId] = new TH1I(("eventHist_" + std::to_string(histId)).c_str(), 
                                       ("Histogram of Event " + std::to_string(eventId) + ", Station " + std::to_string(fStationID) + ", PMT " + std::to_string(pmtId)).c_str(), 
-                                      2048, 0, 2048); // adjust binning as needed
+                                      2048, 0, 2048); // Create a new histogram for this station and PMT
       }
 
       // Now use the histogram
       TH1I* eventHist = eventHists[histId];
-
+      //selecting specific RMS range
       for (i=0; i<traceLength; i++)
       {
         //eventHist->Reset();
         adcs[p][i] = (int) trace[i];
-        eventHist->Fill(i, adcs[p][i]);  
-        //eventHist->Write();
-        std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
+        eventHist->Fill(i, adcs[p][i]);  // Fill the histogram with the ADC value at this time bin
+        //eventHist->Write(); 
+        //std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
       }
-	      eventHist->Write();
+
+      // Create a histogram for the second half of the bins
+      int startIndex = traceLength/2;
+      TH1I* secondHalfHist = new TH1I("secondHalf", "secondHalf", traceLength - startIndex, startIndex, traceLength);
+      for (i=startIndex; i<traceLength; i++)
+      {
+        secondHalfHist->Fill(i, adcs[p][i]);
+      }
+      double rms = secondHalfHist->GetRMS(); // Compute RMS of the trace amplitude
+
+          if (rms >= 141 && rms <= 213)
+    {
+      // ... (existing code for processing the PMT) ...
       Base[p] = pmt.GetCalibData().GetBaseline();
-	    Baseline[p] = Base[p]*16 + .5;
-	    VEMpk[p] = pmt.GetCalibData().GetVEMPeak();
-	    info << ":" << VEMpk[p];
+      Baseline[p] = Base[p] * 16 + .5; // convert to 12-bit ADC counts
+      VEMpk[p] = pmt.GetCalibData().GetVEMPeak();
+      info << ":" << VEMpk[p]; 
+      if (pmt.GetCalibData().IsTubeOk()) Enable[p] = true;
+      if (!pmt.GetCalibData().IsTubeOk()) info << "bad:";
+      eventHist->Write();
+      delete secondHalfHist;  // clean up the second half histogram
+      return eSuccess;
+    }
+    else
+    {
+      // Histogram doesn't meet the criteria, so delete it
+      delete eventHists[histId]; // Delete the histogram object
+      eventHists.erase(histId); // Remove the entry from the map
+      std::cout << "Deleting histogram for event " << eventId << ", Station " << fStationID << ", PMT " << pmtId << " with RMS out of range: " << rms << std::endl;
+      continue; // Skip the remaining processing for this PMT
+      delete secondHalfHist; // Delete second half of the histogram object
+      return eContinueLoop;       
+    }
+      // old part
+      /*Base[p] = pmt.GetCalibData().GetBaseline();  
+	    Baseline[p] = Base[p]*16 + .5; // convert to 12-bit ADC counts
+	    VEMpk[p] = pmt.GetCalibData().GetVEMPeak(); 
+	    info << ":" << VEMpk[p]; 
 	    if (pmt.GetCalibData().IsTubeOk()) Enable[p] = true;
 	    if (!pmt.GetCalibData().IsTubeOk()) info << "bad:";
-    }
+      //const PMTCalibData& pmtCalib = pmt.GetCalibData();
+      eventHist->Write();*/
       std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
-
-      }
-      isUUB = isUUB || fCurrentStation->IsUUB();
-      //IsToTD = IsToTD || Trigger.IsTOTd();
-      //Trigger.IsTOTd;
     }
-  //not necessary if the selected stations already has UUB
-  if (isUUB)
-    reject = false;
-    //std::cout << "has UUB and ToTD" <<
-  else
-    reject = true;
-
-  if (reject)
-    {
-      cout_rejected << "Event " << sevent.GetHeader().GetId()
-                    << " Theta=" << theta << endl;
-      //std::cout << "station" << std::to_string(fStationID) + "has UUB" << std::endl;
-      return eContinueLoop;
-      
-      //return eSuccess;
     }
-  else 
-    {
-      cout_selected << "Event " << sevent.GetHeader().GetId()
-                    << " Theta=" << theta << endl;
-  return eSuccess;
-    }
-  //add a new module that will selects stations that have ToTD
-  
+    //std::cout << "Histogram is in file: " << (outputFile->Get("eventHist_" + std::to_string(eventId)) != nullptr) << std::endl;
+  }
+  return eContinueLoop;
 }
-
-
 VModule::ResultFlag EAStripperDFN::Finish()
 {
 outputFile->Write();
 //std::cout << "Histogram is in file: " << (outputFile->Get("eventHist_" + std::to_string(eventId)) != nullptr) << std::endl;
 outputFile->Close();
-//TFile *checkFile = new TFile("output_hist.root", "READ");
-//std::cout << "Number of keys in file: " << checkFile->GetNkeys() << std::endl;
-//checkFile->Close();
-//delete checkFile;
 return eSuccess;
 }
-
-// Configure (x)emacs for this file ...
-// Local Variables:
-// mode: c++
-// End:
