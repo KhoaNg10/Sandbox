@@ -2,7 +2,7 @@
 //Use as starting point
 
 #include "EAStripperDFN.h"
-//#include "sde_trigger_defs.h"
+#include "sde_trigger_defs.h"
 //#include "trigger_check.h"
 //#include "TriggerParam.h"
 #include <TStyle.h>
@@ -187,79 +187,95 @@ if ((t < t0) || (t >t1))
     const PMT& pmt = stationIt->GetPMT(pmtId);
     Enable[p] = false;
 
-    if (pmt.HasFADCTrace())
-    {
-      nPMTs++;
-      const TraceI& trace = pmt.GetFADCTrace(sdet::PMTConstants::eHighGain);
-      traceLength = trace.GetSize();
+if (pmt.HasFADCTrace())
+{
+    nPMTs++;
+    const TraceI& trace = pmt.GetFADCTrace(sdet::PMTConstants::eHighGain);
+    traceLength = trace.GetSize();
 
-      // create a new histogram for this station and PMT if one doesn't exist
-      int histId = eventId*10000 + fStationID*100 + pmtId;  // Create a unique ID for each histogram
-      if(eventHists.find(histId) == eventHists.end()) {
+    int histId = eventId*10000 + fStationID*100 + pmtId;  // Create a unique ID for each histogram
+
+    if(eventHists.find(histId) == eventHists.end()) 
+    {
         eventHists[histId] = new TH1I(("eventHist_" + std::to_string(histId)).c_str(), 
                                       ("Histogram of Event " + std::to_string(eventId) + ", Station " + std::to_string(fStationID) + ", PMT " + std::to_string(pmtId)).c_str(), 
                                       2048, 0, 2048); // Create a new histogram for this station and PMT
-      }
-
-      // Now use the histogram
-      TH1I* eventHist = eventHists[histId];
-      //selecting specific RMS range
-      for (i=0; i<traceLength; i++)
-      {
-        //eventHist->Reset();
-        adcs[p][i] = (int) trace[i];
-        eventHist->Fill(i, adcs[p][i]);  // Fill the histogram with the ADC value at this time bin
-        //eventHist->Write(); 
-        //std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
-      }
-
-      // Create a histogram for the second half of the bins
-      int startIndex = traceLength/2;
-      TH1I* secondHalfHist = new TH1I("secondHalf", "secondHalf", traceLength - startIndex, startIndex, traceLength);
-      for (i=startIndex; i<traceLength; i++)
-      {
-        secondHalfHist->Fill(i, adcs[p][i]);
-      }
-      double rms = secondHalfHist->GetRMS(); // Compute RMS of the trace amplitude
-
-          if (rms >= 141 && rms <= 213)
-    {
-      // ... (existing code for processing the PMT) ...
-      Base[p] = pmt.GetCalibData().GetBaseline();
-      Baseline[p] = Base[p] * 16 + .5; // convert to 12-bit ADC counts
-      VEMpk[p] = pmt.GetCalibData().GetVEMPeak();
-      info << ":" << VEMpk[p]; 
-      if (pmt.GetCalibData().IsTubeOk()) Enable[p] = true;
-      if (!pmt.GetCalibData().IsTubeOk()) info << "bad:";
-      eventHist->Write();
-      delete secondHalfHist;  // clean up the second half histogram
-      return eSuccess;
     }
-    else
+
+    TH1I* eventHist = eventHists[histId];
+    
+    int startIndex = traceLength/2;
+    std::string secondHalfHistName = "secondHalf_event_" + std::to_string(eventId) + "_PMT_" + std::to_string(pmtId);
+    TH1I* secondHalfHist = new TH1I(secondHalfHistName.c_str(), "secondHalf", traceLength - startIndex, startIndex, traceLength);
+
+    for (i=0; i<traceLength; i++)
     {
-      // Histogram doesn't meet the criteria, so delete it
-      delete eventHists[histId]; // Delete the histogram object
-      eventHists.erase(histId); // Remove the entry from the map
-      std::cout << "Deleting histogram for event " << eventId << ", Station " << fStationID << ", PMT " << pmtId << " with RMS out of range: " << rms << std::endl;
-      continue; // Skip the remaining processing for this PMT
-      delete secondHalfHist; // Delete second half of the histogram object
-      return eContinueLoop;       
+        eventHist->Fill(i, trace[i]);
+        
+        if(i >= startIndex) 
+        {
+            secondHalfHist->Fill(i, trace[i]);
+        }
     }
-      // old part
-      /*Base[p] = pmt.GetCalibData().GetBaseline();  
-	    Baseline[p] = Base[p]*16 + .5; // convert to 12-bit ADC counts
-	    VEMpk[p] = pmt.GetCalibData().GetVEMPeak(); 
-	    info << ":" << VEMpk[p]; 
-	    if (pmt.GetCalibData().IsTubeOk()) Enable[p] = true;
-	    if (!pmt.GetCalibData().IsTubeOk()) info << "bad:";
-      //const PMTCalibData& pmtCalib = pmt.GetCalibData();
-      eventHist->Write();*/
-      std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] <<  " corresponding" << i  << std::endl;
+    
+double rms = secondHalfHist->GetRMS(); // Compute RMS of the trace amplitude
+
+// For debugging
+std::cout << "RMS for event " << eventId << ", PMT " << pmtId << " is: " << rms << std::endl;
+
+if (rms >= 1 && rms <= 5)
+{
+    std::cout << "Writing histogram for event " << eventId << ", PMT " << pmtId << std::endl;
+    eventHist->Write();
+}
+else
+{
+    std::cout << "Skipping histogram for event " << eventId << ", PMT " << pmtId << std::endl;
+}
+
+// Deleting the second half histogram
+delete secondHalfHist;
+
+// Applying FIR filter to get the filtered trace
+int fir[21] = {5,0,12,22,0,-61,-96,0,256,551,681,551,256,0,-96,-61,0,22,12,0,5};
+int filt[2048];
+for (i=21; i<2048; i++)
+{
+    filt[i] = 0;
+    for (int j=0; j<21; j++)
+    {
+        filt[i] += trace[i-21+j] * fir[j];
+    }
+}
+
+TFile filteredOutputFile("filteredtr.root", "UPDATE");
+TH1I filteredHist(("filteredHist_" + std::to_string(histId)).c_str(), 
+                 ("Filtered Histogram of Event " + std::to_string(eventId) + ", Station " + std::to_string(fStationID) + ", PMT " + std::to_string(pmtId)).c_str(), 
+                 2048, 0, 2048);
+for (i=0; i<2048; i++)
+{
+    filteredHist.Fill(i, filt[i]);
+}
+filteredHist.Write();
+filteredOutputFile.Close();
+
+// Downsampling the filtered trace
+TFile downsampledOutputFile("downfilt.root", "UPDATE");
+TH1I downsampledHist(("downsampledHist_" + std::to_string(histId)).c_str(), 
+                    ("Downsampled Histogram of Event " + std::to_string(eventId) + ", Station " + std::to_string(fStationID) + ", PMT " + std::to_string(pmtId)).c_str(), 
+                    2048/3, 0, 2048/3);
+for (i=0; i<2048; i+=3)
+{
+    downsampledHist.Fill(i/3, filt[i]);
+}
+downsampledHist.Write();
+downsampledOutputFile.Close();
+
     }
     }
     //std::cout << "Histogram is in file: " << (outputFile->Get("eventHist_" + std::to_string(eventId)) != nullptr) << std::endl;
   }
-  return eContinueLoop;
+  return eSuccess;
 }
 VModule::ResultFlag EAStripperDFN::Finish()
 {
