@@ -13,14 +13,25 @@
 //#include <THist.h>
 //#include <TH1I> //placeholder
 //#include "IoSdData.h"
-
+#include <cmath>
+#include <vector>
+#include <TH1F.h>
+#include <TCanvas.h>
+#include <TGraph.h>
+#include <csignal>   // Added header for signal handling
+#include <THStack.h>  // Added header for THStack
 
 #include <stdio.h>
 #include <sstream>
 
-//#include "sde_trigger_defs.h"
+#include "sde_trigger_defs.h"
 //#include "trigger_check.h"
 //#include "TriggerParam.h"
+
+/*#define SEQUENCE_MASK 0xFF           // Mask for the lowest 8 bits
+#define ADC_SAMPLE_MASK 0xFFF        // Mask for 12 bits
+#define FILTERED_TRACE_MASK 0x3      // Mask for the 2 least significant bits */
+
 
 using namespace det;
 using namespace evt;
@@ -31,11 +42,6 @@ using namespace fwk;
 
 bool Enable[3];
 int adcs[5][2048];
-int FiltTrace[3][768];
-double Base[3];
-int Baseline[5];
-double VEMpk[3];
-//int TargetStation;
 int FirstMonth;
 int Year;
 int LastMonth;
@@ -48,6 +54,8 @@ int LastHour;
 int LastMinute;
 //int dt;
 int trig_id;
+int filt[2048];
+
 
 sevt::Station *CurrentStation;
 sevt::SEvent::StationIterator stationIt;
@@ -57,11 +65,65 @@ EAStripperDFN::EAStripperDFN() {}
 
 EAStripperDFN::~EAStripperDFN() {}
 
-
-
+TH1F* rmsHist = nullptr;
 TFile *outputFile = nullptr;
 TH1I* eventHist; // Histogram for event numbers
+// Histogram for RMS values
+
 std::map<int, TH1I*> eventHists;
+std::vector<double> rmsValues; // Store RMS values
+std::vector<double> frequencies; // Store frequencies
+std::vector<std::pair<double, int>> rmsValuesWithIDs; // Store RMS values with histogram IDs
+
+void SaveRMSGraph()
+{
+  if (!outputFile) return;
+
+  // Debug: Print the number of RMS values and some sample values
+  std::cout << "Number of RMS values: " << rmsValues.size() << std::endl;
+  if (!rmsValues.empty()) {
+    std::cout << "Sample RMS values: " << rmsValues[0] << ", " << rmsValues[1] << ", " << rmsValues[2] << std::endl;
+  }
+
+  // Find the range of RMS values
+  double rmsMin = *std::min_element(rmsValues.begin(), rmsValues.end());
+  double rmsMax = *std::max_element(rmsValues.begin(), rmsValues.end());
+
+  std::cout << "RMS value range: [" << rmsMin << ", " << rmsMax << "]" << std::endl;
+
+  // Create histogram for RMS values
+  int nBins = 50; // Adjust number of bins as needed
+  TH1F* rmsHist = new TH1F("rmsHist", "RMS vs Frequency", nBins, rmsMin, rmsMax);
+
+  for (double rms : rmsValues) {
+    rmsHist->Fill(rms);
+  }
+
+  rmsHist->SetFillColor(kBlue); // Set bar color to blue
+  rmsHist->SetBarWidth(0.8); // Set bar width to 80% of bin width
+
+  TCanvas *c1 = new TCanvas("c1", "RMS vs Frequency", 800, 600);
+  rmsHist->GetXaxis()->SetTitle("RMS Value");
+  rmsHist->GetYaxis()->SetTitle("Frequency");
+  rmsHist->Draw("bar");
+
+  c1->SaveAs("RMS_vs_Frequency.png");
+
+  outputFile->cd();
+  rmsHist->Write();
+  outputFile->Write();
+  outputFile->Close();
+  delete c1;
+}
+
+void SignalHandler(int signal)
+{
+  if (signal == SIGINT || signal == SIGTSTP) {
+    std::cout << "Interrupt signal received. Saving RMS vs Frequency graph." << std::endl;
+    SaveRMSGraph();
+    exit(signal);
+  }
+}
 
 VModule::ResultFlag EAStripperDFN::Init()
 {
@@ -71,7 +133,7 @@ VModule::ResultFlag EAStripperDFN::Init()
   // successfully.  For other possible return types, 
   // see the VModule documentation.
   INFO("EAStripperDFN::Init()");
-  gStyle->SetOptStat(0);
+  gStyle->SetOptStat(1111111);
 
   // Get parameters from the XML configuration file.
 
@@ -95,7 +157,12 @@ VModule::ResultFlag EAStripperDFN::Init()
 
   cout_selected.open("SelectedEvents.txt", std::fstream::out);
   cout_rejected.open("RejectedEvents.txt", std::fstream::out);
+
   outputFile = new TFile("output_hist.root", "RECREATE");
+
+  // Register signal handler
+  std::signal(SIGINT, SignalHandler);
+  std::signal(SIGTSTP, SignalHandler);
 
   return eSuccess;
 }
@@ -124,7 +191,7 @@ const utl::TimeStamp& lasttime = UTCDateTime(Year,LastMonth,LastDay,LastHour,Las
 unsigned long t = eventTime.GetGPSSecond();
 unsigned long t0 = firstTime.GetGPSSecond();
 unsigned long t1 = lasttime.GetGPSSecond();
-
+outputFile->cd();
 if ((t < t0) || (t >t1))
   {
     info.str("");
@@ -187,14 +254,17 @@ if ((t < t0) || (t >t1))
     const PMT& pmt = stationIt->GetPMT(pmtId);
     Enable[p] = false;
 
+
+
+
 if (pmt.HasFADCTrace())
 {
     nPMTs++;
     const TraceI& trace = pmt.GetFADCTrace(sdet::PMTConstants::eHighGain);
     traceLength = trace.GetSize();
-
     int histId = eventId*10000 + fStationID*100 + pmtId;  // Create a unique ID for each histogram
-
+    
+        
     if(eventHists.find(histId) == eventHists.end()) 
     {
         eventHists[histId] = new TH1I(("eventHist_" + std::to_string(histId)).c_str(), 
@@ -203,84 +273,80 @@ if (pmt.HasFADCTrace())
     }
 
     TH1I* eventHist = eventHists[histId];
-    
-    int startIndex = traceLength/2;
-    std::string secondHalfHistName = "secondHalf_event_" + std::to_string(eventId) + "_PMT_" + std::to_string(pmtId);
-    TH1I* secondHalfHist = new TH1I(secondHalfHistName.c_str(), "secondHalf", traceLength - startIndex, startIndex, traceLength);
+
+    //TH1I* totalHistogram = new TH1I("totalHist", "Total Histogram", /* binning parameters */);
+    //int startIndex = traceLength;
 
     for (i=0; i<traceLength; i++)
     {
-        eventHist->Fill(i, trace[i]);
-        
-        if(i >= startIndex) 
+    adcs[p][i] = (int) trace[i];
+    std::cout << "Filling histogram for event " << eventId << " with value " << adcs[p][i] << std::endl;
+    eventHist->Fill(i, adcs[p][i]);  // Fill the histogram with the ADC value at this time bin
+    std::cout << "Number of entries for event " << eventId << ": " << eventHist->GetEntries() << std::endl;
+    }
+
+    eventHist->Write();
+
+
+        // Calculate RMS for the first 300 bins
+        double sum = 0;
+        double sumSq = 0;
+        int binCount = 300;
+        for (int bin = 1; bin <= binCount; ++bin) 
         {
-            secondHalfHist->Fill(i, trace[i]);
+          double value = eventHist->GetBinContent(bin);
+          sum += value;
+          sumSq += value * value;
         }
+        double mean = sum / binCount;
+        double rms = std::sqrt(sumSq / binCount - mean * mean);
+
+        std::cout << "Calculated RMS: " << rms << std::endl; // Debug: Print each calculated RMS
+
+
+        // Store RMS value and corresponding frequency
+        rmsValues.push_back(rms);
+        frequencies.push_back(fStationID * 100 + pmtId);
+    
+    /* for  (j=0; j<nevents; ++j)
+      {
+        // Print time of event.
+        fwrite(&linux_time[j],sizeof(int),1,output_file);
+        fwrite(&secondsu[j],sizeof(int),1,output_file);
+        fwrite(&delta_tics[j],sizeof(int),1,output_file);
+        fwrite(&trig_bits[j],sizeof(int),1,output_file);
+        for (i=0; i<3; i++)
+          fwrite(&uncleaned_VEMs[j][i],sizeof(double),1,output_file);
+        for (i=0; i<3; i++)
+          fwrite(&cleaned_VEMs[j][i],sizeof(double),1,output_file);
+        for (i=0; i<3; i++)
+          fwrite(&baseline[j][i],sizeof(short),1,output_file);
+        for (i=0; i<3; i++)
+          fwrite(&totd_thres[j][i],sizeof(short),1,output_file);
+
+        for (i=0; i<SHWR_MEM_WORDS; i++)
+          {
+        for (k=0; k<4; k++) // ssd is in k=3
+          fwrite(&adcs[j][k][i],sizeof(u16),1,output_file);
+          }
+      }
+      */
+
+  }
+  
     }
     
-double rms = secondHalfHist->GetRMS(); // Compute RMS of the trace amplitude
-
-// For debugging
-std::cout << "RMS for event " << eventId << ", PMT " << pmtId << " is: " << rms << std::endl;
-
-if (rms >= 1 && rms <= 5)
-{
-    std::cout << "Writing histogram for event " << eventId << ", PMT " << pmtId << std::endl;
-    eventHist->Write();
-}
-else
-{
-    std::cout << "Skipping histogram for event " << eventId << ", PMT " << pmtId << std::endl;
+    } 
+     return eSuccess;
 }
 
-// Deleting the second half histogram
-delete secondHalfHist;
-
-// Applying FIR filter to get the filtered trace
-int fir[21] = {5,0,12,22,0,-61,-96,0,256,551,681,551,256,0,-96,-61,0,22,12,0,5};
-int filt[2048];
-for (i=21; i<2048; i++)
-{
-    filt[i] = 0;
-    for (int j=0; j<21; j++)
-    {
-        filt[i] += trace[i-21+j] * fir[j];
-    }
-}
-
-TFile filteredOutputFile("filteredtr.root", "UPDATE");
-TH1I filteredHist(("filteredHist_" + std::to_string(histId)).c_str(), 
-                 ("Filtered Histogram of Event " + std::to_string(eventId) + ", Station " + std::to_string(fStationID) + ", PMT " + std::to_string(pmtId)).c_str(), 
-                 2048, 0, 2048);
-for (i=0; i<2048; i++)
-{
-    filteredHist.Fill(i, filt[i]);
-}
-filteredHist.Write();
-filteredOutputFile.Close();
-
-// Downsampling the filtered trace
-TFile downsampledOutputFile("downfilt.root", "UPDATE");
-TH1I downsampledHist(("downsampledHist_" + std::to_string(histId)).c_str(), 
-                    ("Downsampled Histogram of Event " + std::to_string(eventId) + ", Station " + std::to_string(fStationID) + ", PMT " + std::to_string(pmtId)).c_str(), 
-                    2048/3, 0, 2048/3);
-for (i=0; i<2048; i+=3)
-{
-    downsampledHist.Fill(i/3, filt[i]);
-}
-downsampledHist.Write();
-downsampledOutputFile.Close();
-
-    }
-    }
-    //std::cout << "Histogram is in file: " << (outputFile->Get("eventHist_" + std::to_string(eventId)) != nullptr) << std::endl;
-  }
-  return eSuccess;
-}
 VModule::ResultFlag EAStripperDFN::Finish()
 {
-outputFile->Write();
-//std::cout << "Histogram is in file: " << (outputFile->Get("eventHist_" + std::to_string(eventId)) != nullptr) << std::endl;
-outputFile->Close();
-return eSuccess;
+  SaveRMSGraph();
+
+  outputFile->Write();
+  outputFile->Close();
+
+
+  return eSuccess;
 }
